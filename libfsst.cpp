@@ -374,17 +374,34 @@ static inline size_t compressSIMD(SymbolTable &symbolTable, u8* symbolBase, size
 
 
 // optimized adaptive *scalar* compression method
-static inline size_t compressBulk(SymbolTable &symbolTable, size_t nlines, const size_t lenIn[], const u8* strIn[], size_t size, u8* out, size_t lenOut[], u8* strOut[], bool noSuffixOpt, bool avoidBranch) {
+static inline size_t compressBulk(SymbolTable &symbolTable, map<string, uint> *global, size_t nlines, const size_t lenIn[], const u8* strIn[], size_t size, u8* out, size_t lenOut[], u8* strOut[], bool noSuffixOpt, bool avoidBranch) {
    const u8 *cur = NULL, *end =  NULL, *lim = out + size;
    size_t curLine, suffixLim = symbolTable.suffixLim;
    u8 byteLim = symbolTable.nSymbols + symbolTable.zeroTerminated - symbolTable.lenHisto[0];
 
    u8 buf[512+8] = {}; /* +8 sentinel is to avoid 8-byte unaligned-loads going beyond 511 out-of-bounds */
 
+   auto findGlobalToken = [&](u64 word, string *token){
+       char *cand = new char[8];
+       memcpy(cand, &word, 8);
+       for (char l = 8; l >= 1; l--){
+           if (global->find(token->assign(cand, l)) != global->end())
+               return 1;
+       }
+
+       return 0;
+   };
+
    // three variants are possible. dead code falls away since the bool arguments are constants
    auto compressVariant = [&](bool noSuffixOpt, bool avoidBranch) {
       while (cur < end) {
          u64 word = fsst_unaligned_load(cur);
+         string globalToken;
+         if (global != nullptr && findGlobalToken(word, &globalToken)) {
+             size_t code = global->find(globalToken)->second;
+             *out++ = (u8) code; cur += globalToken.length();
+             continue;
+         }
          size_t code = symbolTable.shortCodes[word & 0xFFFF];
          if (noSuffixOpt && ((u8) code) < suffixLim) {
             // 2 byte code without having to worry about longer matches
@@ -588,20 +605,20 @@ extern "C" u32 fsst_import(fsst_decoder_t *decoder, u8 *buf) {
 }
 
 // runtime check for simd
-inline size_t _compressImpl(Encoder *e, size_t nlines, const size_t lenIn[], const u8 *strIn[], size_t size, u8 *output, size_t *lenOut, u8 *strOut[], bool noSuffixOpt, bool avoidBranch, int simd) {
+inline size_t _compressImpl(Encoder *e, map<string, uint> *global, size_t nlines, const size_t lenIn[], const u8 *strIn[], size_t size, u8 *output, size_t *lenOut, u8 *strOut[], bool noSuffixOpt, bool avoidBranch, int simd) {
 #ifndef NONOPT_FSST
-   if (simd && fsst_hasAVX512())
+   if (simd && fsst_hasAVX512() && global != nullptr)
       return compressSIMD(*e->symbolTable, e->simdbuf, nlines, lenIn, strIn, size, output, lenOut, strOut, simd);
 #endif
    (void) simd;
-   return compressBulk(*e->symbolTable, nlines, lenIn, strIn, size, output, lenOut, strOut, noSuffixOpt, avoidBranch);
+   return compressBulk(*e->symbolTable, global, nlines, lenIn, strIn, size, output, lenOut, strOut, noSuffixOpt, avoidBranch);
 }
 size_t compressImpl(Encoder *e, size_t nlines, const size_t lenIn[], const u8 *strIn[], size_t size, u8 *output, size_t *lenOut, u8 *strOut[], bool noSuffixOpt, bool avoidBranch, int simd) {
-   return _compressImpl(e, nlines, lenIn, strIn, size, output, lenOut, strOut, noSuffixOpt, avoidBranch, simd);
+   return _compressImpl(e, nullptr, nlines, lenIn, strIn, size, output, lenOut, strOut, noSuffixOpt, avoidBranch, simd);
 }
 
 // adaptive choosing of scalar compression method based on symbol length histogram 
-inline size_t _compressAuto(Encoder *e, size_t nlines, const size_t lenIn[], const u8 *strIn[], size_t size, u8 *output, size_t *lenOut, u8 *strOut[], int simd) {
+inline size_t _compressAuto(Encoder *e, map<string, uint> *global, size_t nlines, const size_t lenIn[], const u8 *strIn[], size_t size, u8 *output, size_t *lenOut, u8 *strOut[], int simd) {
    bool avoidBranch = false, noSuffixOpt = false;
    if (100*e->symbolTable->lenHisto[1] > 65*e->symbolTable->nSymbols && 100*e->symbolTable->suffixLim > 95*e->symbolTable->lenHisto[1]) {
       noSuffixOpt = true;
@@ -610,10 +627,10 @@ inline size_t _compressAuto(Encoder *e, size_t nlines, const size_t lenIn[], con
               (e->symbolTable->lenHisto[0] < 72 || e->symbolTable->lenHisto[2] < 72)) {
       avoidBranch = true;
    }
-   return _compressImpl(e, nlines, lenIn, strIn, size, output, lenOut, strOut, noSuffixOpt, avoidBranch, simd);
+   return _compressImpl(e, global, nlines, lenIn, strIn, size, output, lenOut, strOut, noSuffixOpt, avoidBranch, simd);
 }
 size_t compressAuto(Encoder *e, size_t nlines, const size_t lenIn[], const u8 *strIn[], size_t size, u8 *output, size_t *lenOut, u8 *strOut[], int simd) {
-   return _compressAuto(e, nlines, lenIn, strIn, size, output, lenOut, strOut, simd);
+   return _compressAuto(e, nullptr, nlines, lenIn, strIn, size, output, lenOut, strOut, simd);
 }
 
 // the main compression function (everything automatic)
@@ -621,7 +638,14 @@ extern "C" size_t fsst_compress(fsst_encoder_t *encoder, size_t nlines, const si
    // to be faster than scalar, simd needs 64 lines or more of length >=12; or fewer lines, but big ones (totLen > 32KB)
    size_t totLen = accumulate(lenIn, lenIn+nlines, 0);
    int simd = totLen > nlines*12 && (nlines > 64 || totLen > (size_t) 1<<15); 
-   return _compressAuto((Encoder*) encoder, nlines, lenIn, strIn, size, output, lenOut, strOut, 3*simd);
+   return _compressAuto((Encoder*) encoder, nullptr, nlines, lenIn, strIn, size, output, lenOut, strOut, 3 * simd);
+}
+
+extern "C" size_t fsst_compress_global(fsst_encoder_t *encoder, map<string, uint> *global, size_t nstrings, const size_t lenIn[], const unsigned char *strIn[], size_t outsize, unsigned char *output, size_t lenOut[], unsigned char *strOut[]) {
+    // to be faster than scalar, simd needs 64 lines or more of length >=12; or fewer lines, but big ones (totLen > 32KB)
+    size_t totLen = accumulate(lenIn, lenIn + nstrings, 0);
+    int simd = totLen > nstrings * 12 && (nstrings > 64 || totLen > (size_t) 1 << 15);
+    return _compressAuto((Encoder*) encoder, global, nstrings, lenIn, strIn, outsize, output, lenOut, strOut, 3 * simd);
 }
 
 /* deallocate encoder */

@@ -139,6 +139,19 @@ fsst_compress(
    unsigned char *strOut[]  /* OUT: output string start pointers. Will all point into [output,output+size). */
 );
 
+size_t                      /* OUT: the number of compressed strings (<=n) that fit the output buffer. */
+fsst_compress_global(
+        fsst_encoder_t *encoder, /* IN: encoder obtained from fsst_create(). */
+        map<string, uint> *global,
+        size_t nstrings,         /* IN: number of strings in batch to compress. */
+        const size_t lenIn[],          /* IN: byte-lengths of the inputs */
+        const unsigned char *strIn[],  /* IN: input string start pointers. */
+        size_t outsize,          /* IN: byte-length of output buffer. */
+        unsigned char *output,   /* OUT: memory buffer to put the compressed strings in (one after the other). */
+        size_t lenOut[],         /* OUT: byte-lengths of the compressed strings. */
+        unsigned char *strOut[]  /* OUT: output string start pointers. Will all point into [output,output+size). */
+);
+
 /* Decompress a single string, inlined for speed. */
 inline size_t /* OUT: bytesize of the decompressed string. If > size, the decoded output is truncated to size. */
 fsst_decompress(
@@ -160,7 +173,7 @@ fsst_decompress(
       memcpy(&nextBlock, strIn+posIn, sizeof(unsigned int));
       escapeMask = (nextBlock&0x80808080u)&((((~nextBlock)&0x7F7F7F7Fu)+0x7F7F7F7Fu)^0x80808080u);
       if (escapeMask == 0) {
-         code = strIn[posIn++]; FSST_UNALIGNED_STORE(strOut+posOut, symbol[code]); posOut += len[code]; 
+         code = strIn[posIn++]; FSST_UNALIGNED_STORE(strOut+posOut, symbol[code]); posOut += len[code];
          code = strIn[posIn++]; FSST_UNALIGNED_STORE(strOut+posOut, symbol[code]); posOut += len[code]; 
          code = strIn[posIn++]; FSST_UNALIGNED_STORE(strOut+posOut, symbol[code]); posOut += len[code]; 
          code = strIn[posIn++]; FSST_UNALIGNED_STORE(strOut+posOut, symbol[code]); posOut += len[code]; 
