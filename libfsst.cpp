@@ -397,11 +397,11 @@ static inline size_t compressBulk(SymbolTable &symbolTable, map<string, uint> *g
       while (cur < end) {
          u64 word = fsst_unaligned_load(cur);
          string globalToken;
-         if (global != nullptr && findGlobalToken(word, &globalToken)) {
-             size_t code = global->find(globalToken)->second;
-             *out++ = (u8) code; cur += globalToken.length();
-             continue;
-         }
+//         if (global != nullptr && findGlobalToken(word, &globalToken)) {
+//             size_t code = global->find(globalToken)->second;
+//             *out++ = (u8) code; cur += globalToken.length();
+//             continue;
+//         }
          size_t code = symbolTable.shortCodes[word & 0xFFFF];
          if (noSuffixOpt && ((u8) code) < suffixLim) {
             // 2 byte code without having to worry about longer matches
