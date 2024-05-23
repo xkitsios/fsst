@@ -381,14 +381,21 @@ static inline size_t compressBulk(SymbolTable &symbolTable, map<string, uint> *g
 
    u8 buf[512+8] = {}; /* +8 sentinel is to avoid 8-byte unaligned-loads going beyond 511 out-of-bounds */
 
-   auto findGlobalToken = [&](u64 word, string *token){
+    map <string, uint> codes;
+    if (global != nullptr) {
+        codes = *global;
+        for (int i = symbolTable.zeroTerminated; i < symbolTable.nSymbols; i++)
+            codes.emplace(symbolTable.symbols[i].val.str, symbolTable.symbols[i].code());
+    }
+
+    auto findGlobalToken = [&](u64 word, string *token){
        char *cand = new char[8];
        memcpy(cand, &word, 8);
        for (char l = 8; l >= 1; l--){
-           if (global->find(token->assign(cand, l)) != global->end())
+           token->assign(cand, l);
+           if (codes.find(*token) != codes.end())
                return 1;
        }
-
        return 0;
    };
 
@@ -396,12 +403,20 @@ static inline size_t compressBulk(SymbolTable &symbolTable, map<string, uint> *g
    auto compressVariant = [&](bool noSuffixOpt, bool avoidBranch) {
       while (cur < end) {
          u64 word = fsst_unaligned_load(cur);
-         string globalToken;
-//         if (global != nullptr && findGlobalToken(word, &globalToken)) {
-//             size_t code = global->find(globalToken)->second;
-//             *out++ = (u8) code; cur += globalToken.length();
-//             continue;
-//         }
+         string token;
+         if (global != nullptr) {
+             if (findGlobalToken(word, &token)) {
+                 size_t code = codes.find(token)->second;
+                 *out++ = (u8) code;
+                 cur += token.length();
+             }
+             else {
+                 *out++ = (u8) 255;
+                 *out++ = (u8) word & 0xFF;
+                 cur += 1;
+            }
+             continue;
+         }
          size_t code = symbolTable.shortCodes[word & 0xFFFF];
          if (noSuffixOpt && ((u8) code) < suffixLim) {
             // 2 byte code without having to worry about longer matches
